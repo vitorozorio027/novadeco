@@ -14,6 +14,9 @@
 </template>
 
 <script setup>
+import { ref, onMounted } from 'vue'
+import { useSupabaseClient } from '#imports'
+
 const currentPlayer = ref(null)
 
 onMounted(() => {
@@ -24,8 +27,7 @@ onMounted(() => {
 })
 
 const loadPlayer = async (username) => {
-  const { $supabase } = useNuxtApp()
-  const { data, error } = await $supabase
+  const { data, error } = await useSupabaseClient()
     .from('players')
     .select('*')
     .eq('username', username)

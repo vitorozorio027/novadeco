@@ -33,7 +33,8 @@
 </template>
 
 <script setup>
-const { $supabase } = useNuxtApp()
+import { useSupabaseClient } from '#imports'
+
 const emit = defineEmits(['user-registered'])
 
 const username = ref('')
@@ -53,7 +54,7 @@ const isValid = computed(() => {
 const checkUsername = async () => {
   if (!username.value) return
   
-  const { data, error } = await $supabase
+  const { data, error } = await useSupabaseClient()
     .from('players')
     .select('username')
     .eq('username', username.value)
@@ -69,33 +70,77 @@ const registerUser = async () => {
   try {
     console.log('Tentando registrar usuário:', username.value)
     
+    const supabase = useSupabaseClient()
+    
     // Check if this is the first player
-    const { data: existingPlayers } = await $supabase
+    const { data: existingPlayers, error: checkError } = await supabase
       .from('players')
       .select('id')
+      .throwOnError()
     
+    if (checkError) {
+      console.error('Erro ao verificar jogadores existentes:', checkError)
+      throw new Error('Erro ao verificar jogadores existentes')
+    }
+    
+    console.log('Jogadores existentes:', existingPlayers)
     const isFirstPlayer = !existingPlayers || existingPlayers.length === 0
+    console.log('É o primeiro jogador?', isFirstPlayer)
     
-    const { data, error } = await $supabase
+    // Primeiro, insere o jogador
+    const { data: playerData, error: insertError } = await supabase
       .from('players')
       .insert([{ 
-        username: username.value,
-        is_host: isFirstPlayer
+        username: username.value
       }])
       .select()
       .single()
+      .throwOnError()
 
-    if (error) {
-      console.error('Erro do Supabase:', error)
-      throw error
+    if (insertError) {
+      console.error('Erro detalhado do Supabase:', insertError)
+      console.error('Código do erro:', insertError.code)
+      console.error('Mensagem do erro:', insertError.message)
+      console.error('Detalhes do erro:', insertError.details)
+      
+      if (insertError.code === '23505') { // Código de erro para violação de unicidade
+        errorMessage.value = 'Este nome de usuário já está em uso'
+      } else {
+        errorMessage.value = 'Erro ao registrar usuário. Por favor, tente novamente.'
+      }
+      throw insertError
     }
 
-    console.log('Usuário registrado com sucesso:', data)
+    // Se for o primeiro jogador, atualiza o host_id no game_state
+    if (isFirstPlayer) {
+      const { error: updateError } = await supabase
+        .from('game_state')
+        .update({ 
+          host_id: playerData.id,
+          state: 'waiting'
+        })
+        .eq('id', 1)
+        .throwOnError()
+
+      if (updateError) {
+        console.error('Erro ao atualizar host:', updateError)
+        // Se falhar ao atualizar o host, remove o jogador criado
+        await supabase
+          .from('players')
+          .delete()
+          .eq('id', playerData.id)
+        throw new Error('Erro ao atualizar host')
+      }
+    }
+
+    console.log('Usuário registrado com sucesso:', playerData)
     localStorage.setItem('gameUsername', username.value)
-    emit('user-registered', data)
+    emit('user-registered', playerData)
   } catch (error) {
     console.error('Erro detalhado:', error)
-    errorMessage.value = 'Erro ao registrar usuário'
+    if (!errorMessage.value) {
+      errorMessage.value = 'Erro ao registrar usuário. Por favor, tente novamente.'
+    }
   } finally {
     loading.value = false
   }

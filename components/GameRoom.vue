@@ -139,13 +139,19 @@
 
 <script setup>
 import { encrypt, decrypt, generateRandomShift, generateRandomWord } from '~/utils/caesarCipher'
-const { $supabase } = useNuxtApp()
+import { FIXED_HOST_ID, GAME_SETTINGS, DIFFICULTY_SETTINGS } from '~/server/config'
+import { getCachedGameState, getCachedPlayers, invalidateCache, startRateLimitCleanup } from '~/server/cache'
+import { handleDisconnect, handleReconnect, handleError, startInactivePlayersCheck } from '~/server/reconnection'
+import { useSupabaseClient } from '#imports'
+
 const props = defineProps({
   currentPlayer: {
     type: Object,
     required: true
   }
 })
+
+const supabase = useSupabaseClient()
 
 const gameState = ref('waiting')
 const countdown = ref(3)
@@ -154,165 +160,128 @@ const userAnswer = ref('')
 const hasAnswered = ref(false)
 const players = ref([])
 const currentChallenge = ref(null)
-const isHost = ref(false)
+const currentHostId = ref(null)
+const isHost = computed(() => props.currentPlayer.id === currentHostId.value)
 const gameInterval = ref(null)
 const timerInterval = ref(null)
+const reconnectAttempts = ref(0)
+const maxReconnectAttempts = 3
 
 const sortedPlayers = computed(() => {
   return [...players.value].sort((a, b) => b.score - a.score)
 })
 
 onMounted(async () => {
-  // Subscribe to game state changes
-  const gameChannel = $supabase
-    .channel('game-state')
-    .on('broadcast', { event: 'game-state' }, ({ payload }) => {
-      handleGameStateUpdate(payload)
-    })
-    .subscribe()
-
-  // Subscribe to player updates
-  const playersChannel = $supabase
-    .channel('players')
-    .on('broadcast', { event: 'player-update' }, ({ payload }) => {
-      handlePlayerUpdate(payload)
-    })
-    .subscribe()
-
-  // Load initial players
-  const { data: initialPlayers } = await $supabase
-    .from('players')
-    .select('*')
-  players.value = initialPlayers
-
-  // Load current game state
-  const { data: currentGameState } = await $supabase
-    .from('game_state')
-    .select('*')
-    .single()
-
-  if (currentGameState) {
-    gameState.value = currentGameState.state
-    if (currentGameState.challenge) {
-      currentChallenge.value = currentGameState.challenge
+  try {
+    // Iniciar verificadores apenas no cliente
+    if (process.client) {
+      startRateLimitCleanup()
+      startInactivePlayersCheck()
     }
-    if (currentGameState.time_left) {
-      timeLeft.value = currentGameState.time_left
-    }
-  }
 
-  // Set host if no other players or if this player is already host
-  if (players.value.length === 1) {
-    // If this is the only player, make them host
-    const { data } = await $supabase
-      .from('players')
-      .update({ is_host: true })
-      .eq('id', props.currentPlayer.id)
-      .select()
+    // Carregar estado inicial do jogo
+    const { data: initialGameState } = await supabase
+      .from('game_state')
+      .select('*')
       .single()
-    
-    if (data) {
-      isHost.value = true
-      props.currentPlayer.is_host = true
+
+    if (initialGameState) {
+      currentHostId.value = initialGameState.host_id
+      gameState.value = initialGameState.state
     }
-  } else {
-    // Otherwise, check if this player is already host
-    isHost.value = props.currentPlayer.is_host || false
+
+    // Subscribe to game state changes with reconnection handling
+    const gameChannel = supabase
+      .channel('game-state')
+      .on('broadcast', { event: 'game-state' }, ({ payload }) => {
+        handleGameStateUpdate(payload)
+      })
+      .on('disconnect', () => {
+        handleDisconnect(props.currentPlayer.id, supabase)
+      })
+      .on('reconnect', async () => {
+        const result = await handleReconnect(props.currentPlayer.id, supabase)
+        if (result.success) {
+          reconnectAttempts.value = 0
+          gameState.value = result.gameState.state
+          players.value = result.players
+          if (result.gameState.challenge) {
+            currentChallenge.value = result.gameState.challenge
+          }
+        } else if (reconnectAttempts.value < maxReconnectAttempts) {
+          reconnectAttempts.value++
+          setTimeout(() => {
+            gameChannel.subscribe()
+          }, 1000 * reconnectAttempts.value)
+        }
+      })
+      .subscribe()
+
+    // Subscribe to player updates with cache
+    const playersChannel = supabase
+      .channel('players')
+      .on('broadcast', { event: 'player-update' }, ({ payload }) => {
+        handlePlayerUpdate(payload)
+      })
+      .subscribe()
+
+    // Load initial data with cache
+    const [initialPlayers, currentGameState] = await Promise.all([
+      getCachedPlayers(supabase),
+      getCachedGameState(supabase)
+    ])
+
+    players.value = initialPlayers || []
+    
+    if (currentGameState) {
+      gameState.value = currentGameState.state
+      if (currentGameState.challenge) {
+        currentChallenge.value = currentGameState.challenge
+      }
+      if (currentGameState.time_left) {
+        timeLeft.value = currentGameState.time_left
+      }
+    }
+  } catch (error) {
+    const result = await handleError(error, supabase)
+    if (result.success) {
+      gameState.value = result.gameState.state
+    } else {
+      console.error('Failed to initialize game:', result.error)
+    }
   }
 })
 
 const handleGameStateUpdate = async (payload) => {
-  gameState.value = payload.state
-  
-  // Persist game state to database
-  await $supabase
-    .from('game_state')
-    .upsert({
-      id: 1, // We'll use a single row for game state
-      state: payload.state,
-      challenge: payload.challenge || null,
-      time_left: timeLeft.value
-    })
-
-  if (payload.state === 'countdown') {
-    countdown.value = payload.countdown
-  } else if (payload.state === 'playing') {
-    currentChallenge.value = payload.challenge
-    timeLeft.value = 30
-    hasAnswered.value = false
-    userAnswer.value = ''
+  try {
+    gameState.value = payload.state
     
-    // Iniciar o timer de 30 segundos
-    if (timerInterval.value) {
-      clearInterval(timerInterval.value)
+    // Update cache
+    await supabase
+      .from('game_state')
+      .upsert({
+        id: 1,
+        state: payload.state,
+        challenge: payload.challenge || null,
+        time_left: timeLeft.value,
+        host_id: currentHostId.value
+      })
+    
+    invalidateCache('game_state')
+
+    // Atualizar host_id se fornecido
+    if (payload.host_id) {
+      currentHostId.value = payload.host_id
     }
-    timerInterval.value = setInterval(() => {
-      timeLeft.value--
-      // Update time left in database
-      $supabase
-        .from('game_state')
-        .update({ time_left: timeLeft.value })
-        .eq('id', 1)
+
+    if (payload.state === 'countdown') {
+      countdown.value = payload.countdown
+    } else if (payload.state === 'playing') {
+      currentChallenge.value = payload.challenge
+      timeLeft.value = DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+      hasAnswered.value = false
+      userAnswer.value = ''
       
-      if (timeLeft.value <= 0) {
-        clearInterval(timerInterval.value)
-        if (isHost.value) {
-          startNewRound()
-        }
-      }
-    }, 1000)
-  }
-}
-
-const handlePlayerUpdate = (payload) => {
-  const index = players.value.findIndex(p => p.id === payload.id)
-  if (index !== -1) {
-    players.value[index] = { ...players.value[index], ...payload }
-  } else {
-    players.value.push(payload)
-  }
-}
-
-const startNewRound = async () => {
-  const shift = generateRandomShift()
-  const word = await generateRandomWord()
-  const challenge = {
-    encrypted: encrypt(word, shift),
-    shift: shift
-  }
-
-  // Iniciar contador regressivo de 3 segundos
-  countdown.value = 3
-  await $supabase
-    .channel('game-state')
-    .send({
-      type: 'broadcast',
-      event: 'game-state',
-      payload: {
-        state: 'countdown',
-        countdown: countdown.value
-      }
-    })
-
-  // Atualizar o contador a cada segundo
-  const countdownInterval = setInterval(() => {
-    countdown.value--
-    if (countdown.value <= 0) {
-      clearInterval(countdownInterval)
-      // Iniciar o jogo após o contador chegar a 0
-      $supabase
-        .channel('game-state')
-        .send({
-          type: 'broadcast',
-          event: 'game-state',
-          payload: {
-            state: 'playing',
-            challenge
-          }
-        })
-
-      // Iniciar o contador de 30 segundos
-      timeLeft.value = 30
       if (timerInterval.value) {
         clearInterval(timerInterval.value)
       }
@@ -320,23 +289,118 @@ const startNewRound = async () => {
         timeLeft.value--
         if (timeLeft.value <= 0) {
           clearInterval(timerInterval.value)
-          startNewRound()
+          endRound()
         }
       }, 1000)
-    } else {
-      // Atualizar o contador para todos os jogadores
-      $supabase
-        .channel('game-state')
-        .send({
-          type: 'broadcast',
-          event: 'game-state',
-          payload: {
-            state: 'countdown',
-            countdown: countdown.value
-          }
-        })
     }
-  }, 1000)
+  } catch (error) {
+    handleError(error, supabase)
+  }
+}
+
+const handlePlayerUpdate = async (payload) => {
+  try {
+    const { data: updatedPlayers } = await supabase
+      .from('players')
+      .select('*')
+      .order('score', { ascending: false })
+    
+    if (updatedPlayers) {
+      players.value = updatedPlayers
+      invalidateCache('players')
+    }
+  } catch (error) {
+    handleError(error, supabase)
+  }
+}
+
+const endRound = async () => {
+  // Atualizar o estado do jogo para waiting
+  await supabase
+    .channel('game-state')
+    .send({
+      type: 'broadcast',
+      event: 'game-state',
+      payload: {
+        state: 'waiting'
+      }
+    })
+
+  // Limpar o desafio atual
+  currentChallenge.value = null
+  hasAnswered.value = false
+  userAnswer.value = ''
+}
+
+const startNewRound = async () => {
+  try {
+    const shift = generateRandomShift()
+    const word = await generateRandomWord()
+    const challenge = {
+      encrypted: encrypt(word, shift),
+      shift: shift
+    }
+
+    // Iniciar contador regressivo de 3 segundos
+    countdown.value = 3
+    await supabase
+      .channel('game-state')
+      .send({
+        type: 'broadcast',
+        event: 'game-state',
+        payload: {
+          state: 'countdown',
+          countdown: countdown.value
+        }
+      })
+
+    // Atualizar o contador a cada segundo
+    const countdownInterval = setInterval(() => {
+      countdown.value--
+      if (countdown.value <= 0) {
+        clearInterval(countdownInterval)
+        // Iniciar o jogo após o contador chegar a 0
+        supabase
+          .channel('game-state')
+          .send({
+            type: 'broadcast',
+            event: 'game-state',
+            payload: {
+              state: 'playing',
+              challenge
+            }
+          })
+
+        // Iniciar o contador de 30 segundos
+        timeLeft.value = DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+        if (timerInterval.value) {
+          clearInterval(timerInterval.value)
+        }
+        timerInterval.value = setInterval(() => {
+          timeLeft.value--
+          if (timeLeft.value <= 0) {
+            clearInterval(timerInterval.value)
+            endRound()
+          }
+        }, 1000)
+      } else {
+        // Atualizar o contador para todos os jogadores
+        supabase
+          .channel('game-state')
+          .send({
+            type: 'broadcast',
+            event: 'game-state',
+            payload: {
+              state: 'countdown',
+              countdown: countdown.value
+            }
+          })
+      }
+    }, 1000)
+  } catch (error) {
+    console.error('Error starting new round:', error)
+    handleError(error, supabase)
+  }
 }
 
 const submitAnswer = async () => {
@@ -347,7 +411,7 @@ const submitAnswer = async () => {
 
   hasAnswered.value = true
 
-  await $supabase
+  await supabase
     .channel('players')
     .send({
       type: 'broadcast',
@@ -369,7 +433,7 @@ const pauseGame = async () => {
   if (!isHost.value) return
   
   clearInterval(timerInterval.value)
-  await $supabase
+  await supabase
     .channel('game-state')
     .send({
       type: 'broadcast',
@@ -384,7 +448,7 @@ const pauseGame = async () => {
 const resumeGame = async () => {
   if (!isHost.value) return
 
-  await $supabase
+  await supabase
     .channel('game-state')
     .send({
       type: 'broadcast',
@@ -412,7 +476,7 @@ onUnmounted(() => {
   if (timerInterval.value) {
     clearInterval(timerInterval.value)
   }
-  $supabase.removeAllChannels()
+  supabase.removeAllChannels()
 })
 </script>
 
