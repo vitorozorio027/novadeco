@@ -315,21 +315,8 @@ const handlePlayerUpdate = async (payload) => {
 }
 
 const endRound = async () => {
-  // Atualizar o estado do jogo para waiting
-  await supabase
-    .channel('game-state')
-    .send({
-      type: 'broadcast',
-      event: 'game-state',
-      payload: {
-        state: 'waiting'
-      }
-    })
-
-  // Limpar o desafio atual
-  currentChallenge.value = null
-  hasAnswered.value = false
-  userAnswer.value = ''
+  // Instead of ending the game, start a new round
+  await startNewRound()
 }
 
 const startNewRound = async () => {
@@ -380,7 +367,7 @@ const startNewRound = async () => {
           timeLeft.value--
           if (timeLeft.value <= 0) {
             clearInterval(timerInterval.value)
-            endRound()
+            endRound() // This will now start a new round instead of ending the game
           }
         }, 1000)
       } else {
