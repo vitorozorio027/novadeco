@@ -161,6 +161,7 @@ const hasAnswered = ref(false)
 const players = ref([])
 const currentChallenge = ref(null)
 const currentHostId = ref(null)
+const answeredChallenges = ref(new Set())
 const isHost = computed(() => props.currentPlayer.id === currentHostId.value)
 const gameInterval = ref(null)
 const timerInterval = ref(null)
@@ -262,8 +263,7 @@ const handleGameStateUpdate = async (payload) => {
       .upsert({
         id: 1,
         state: payload.state,
-        challenge: payload.challenge || null,
-        time_left: timeLeft.value,
+        time_left: payload.time_left || timeLeft.value,
         host_id: currentHostId.value
       })
     
@@ -277,16 +277,51 @@ const handleGameStateUpdate = async (payload) => {
     if (payload.state === 'countdown') {
       countdown.value = payload.countdown
     } else if (payload.state === 'playing') {
-      currentChallenge.value = payload.challenge
-      timeLeft.value = DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
-      hasAnswered.value = false
+      // Busca o desafio atual do banco de dados
+      const { data: gameStateData } = await supabase
+        .from('game_state')
+        .select('challenge, time_left')
+        .single()
+      
+      if (gameStateData) {
+        if (gameStateData.challenge) {
+          currentChallenge.value = gameStateData.challenge
+          // Reset hasAnswered for new challenge
+          hasAnswered.value = answeredChallenges.value.has(gameStateData.challenge.encrypted)
+        }
+        if (gameStateData.time_left) {
+          timeLeft.value = gameStateData.time_left
+        }
+      }
+      
       userAnswer.value = ''
       
       if (timerInterval.value) {
         clearInterval(timerInterval.value)
       }
-      timerInterval.value = setInterval(() => {
+
+      // Sincroniza o timer com o servidor a cada segundo
+      timerInterval.value = setInterval(async () => {
         timeLeft.value--
+        
+        // Atualiza o tempo no banco de dados
+        await supabase
+          .from('game_state')
+          .update({ time_left: timeLeft.value })
+          .eq('id', 1)
+
+        // Broadcast para todos os clientes
+        await supabase
+          .channel('game-state')
+          .send({
+            type: 'broadcast',
+            event: 'game-state',
+            payload: {
+              state: 'playing',
+              time_left: timeLeft.value
+            }
+          })
+
         if (timeLeft.value <= 0) {
           clearInterval(timerInterval.value)
           endRound()
@@ -300,6 +335,7 @@ const handleGameStateUpdate = async (payload) => {
 
 const handlePlayerUpdate = async (payload) => {
   try {
+    // Busca a lista atualizada de jogadores do banco
     const { data: updatedPlayers } = await supabase
       .from('players')
       .select('*')
@@ -321,11 +357,24 @@ const endRound = async () => {
 
 const startNewRound = async () => {
   try {
-    const shift = generateRandomShift()
-    const word = await generateRandomWord()
-    const challenge = {
-      encrypted: encrypt(word, shift),
-      shift: shift
+    // Apenas o host gera a palavra e o deslocamento
+    if (isHost.value) {
+      const shift = generateRandomShift()
+      const word = await generateRandomWord()
+      const challenge = {
+        encrypted: encrypt(word, shift),
+        shift: shift
+      }
+
+      // Atualiza o estado do jogo com o novo desafio
+      await supabase
+        .from('game_state')
+        .update({
+          challenge: challenge,
+          state: 'countdown',
+          time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+        })
+        .eq('id', 1)
     }
 
     // Iniciar contador regressivo de 3 segundos
@@ -354,22 +403,9 @@ const startNewRound = async () => {
             event: 'game-state',
             payload: {
               state: 'playing',
-              challenge
+              time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
             }
           })
-
-        // Iniciar o contador de 30 segundos
-        timeLeft.value = DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
-        if (timerInterval.value) {
-          clearInterval(timerInterval.value)
-        }
-        timerInterval.value = setInterval(() => {
-          timeLeft.value--
-          if (timeLeft.value <= 0) {
-            clearInterval(timerInterval.value)
-            endRound() // This will now start a new round instead of ending the game
-          }
-        }, 1000)
       } else {
         // Atualizar o contador para todos os jogadores
         supabase
@@ -397,17 +433,55 @@ const submitAnswer = async () => {
     decrypt(currentChallenge.value.encrypted, currentChallenge.value.shift).toLowerCase()
 
   hasAnswered.value = true
+  answeredChallenges.value.add(currentChallenge.value.encrypted)
 
-  await supabase
-    .channel('players')
-    .send({
-      type: 'broadcast',
-      event: 'player-update',
-      payload: {
-        id: props.currentPlayer.id,
-        score: props.currentPlayer.score + (isCorrect ? 10 : 0)
-      }
-    })
+  if (isCorrect) {
+    // Primeiro busca o score atual do jogador
+    const { data: currentPlayerData } = await supabase
+      .from('players')
+      .select('score')
+      .eq('id', props.currentPlayer.id)
+      .single()
+
+    if (!currentPlayerData) {
+      console.error('Erro ao buscar score atual do jogador')
+      return
+    }
+
+    const newScore = currentPlayerData.score + 10
+
+    // Atualiza o score no banco de dados usando o score atual
+    const { error } = await supabase
+      .from('players')
+      .update({ 
+        score: newScore,
+        last_active: new Date().toISOString()
+      })
+      .eq('id', props.currentPlayer.id)
+
+    if (error) {
+      console.error('Erro ao atualizar score:', error)
+      return
+    }
+
+    // Atualiza o estado local do jogador
+    const playerIndex = players.value.findIndex(p => p.id === props.currentPlayer.id)
+    if (playerIndex !== -1) {
+      players.value[playerIndex].score = newScore
+    }
+
+    // Depois faz o broadcast para atualizar os outros jogadores
+    await supabase
+      .channel('players')
+      .send({
+        type: 'broadcast',
+        event: 'player-update',
+        payload: {
+          id: props.currentPlayer.id,
+          score: newScore
+        }
+      })
+  }
 }
 
 const startGame = async () => {

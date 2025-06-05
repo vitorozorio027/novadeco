@@ -135,6 +135,20 @@ const registerUser = async () => {
 
     console.log('Usuário registrado com sucesso:', playerData)
     localStorage.setItem('gameUsername', username.value)
+    
+    // Emite um broadcast para atualizar a lista de jogadores
+    await supabase
+      .channel('players')
+      .send({
+        type: 'broadcast',
+        event: 'player-update',
+        payload: {
+          id: playerData.id,
+          score: 0,
+          action: 'join'
+        }
+      })
+    
     emit('user-registered', playerData)
   } catch (error) {
     console.error('Erro detalhado:', error)
