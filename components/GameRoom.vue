@@ -243,6 +243,21 @@ onMounted(async () => {
         timeLeft.value = currentGameState.time_left
       }
     }
+
+    // Carregar desafios já respondidos do banco de dados
+    const { data: playerData } = await supabase
+      .from('players')
+      .select('answered_challenges')
+      .eq('id', props.currentPlayer.id)
+      .single()
+
+    if (playerData && playerData.answered_challenges) {
+      answeredChallenges.value = new Set(playerData.answered_challenges)
+      // Verifica se o desafio atual já foi respondido
+      if (currentChallenge.value) {
+        hasAnswered.value = answeredChallenges.value.has(currentChallenge.value.encrypted)
+      }
+    }
   } catch (error) {
     const result = await handleError(error, supabase)
     if (result.success) {
@@ -434,6 +449,20 @@ const submitAnswer = async () => {
 
   hasAnswered.value = true
   answeredChallenges.value.add(currentChallenge.value.encrypted)
+
+  // Atualiza o estado de resposta no banco de dados
+  const { error: updateError } = await supabase
+    .from('players')
+    .update({ 
+      answered_challenges: [...answeredChallenges.value],
+      last_active: new Date().toISOString()
+    })
+    .eq('id', props.currentPlayer.id)
+
+  if (updateError) {
+    console.error('Erro ao atualizar estado de resposta:', updateError)
+    return
+  }
 
   if (isCorrect) {
     // Primeiro busca o score atual do jogador
