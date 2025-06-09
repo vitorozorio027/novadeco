@@ -113,7 +113,7 @@
       </v-col>
 
       <v-col cols="12" md="4">
-        <v-card>
+        <v-card v-if="gameState !== 'playing'">
           <v-card-title>Ranking</v-card-title>
           <v-card-text>
             <v-list>
@@ -132,6 +132,7 @@
             </v-list>
           </v-card-text>
         </v-card>
+        <CaesarWheel v-else />
       </v-col>
     </v-row>
   </v-container>
@@ -150,6 +151,8 @@ const props = defineProps({
     required: true
   }
 })
+
+const emit = defineEmits(['game-state-change'])
 
 const supabase = useSupabaseClient()
 
@@ -271,6 +274,7 @@ onMounted(async () => {
 const handleGameStateUpdate = async (payload) => {
   try {
     gameState.value = payload.state
+    emit('game-state-change', payload.state)
     
     // Update cache
     await supabase
@@ -300,16 +304,18 @@ const handleGameStateUpdate = async (payload) => {
       
       if (gameStateData) {
         if (gameStateData.challenge) {
-          currentChallenge.value = gameStateData.challenge
-          // Reset hasAnswered for new challenge
-          hasAnswered.value = answeredChallenges.value.has(gameStateData.challenge.encrypted)
+          // Só limpa a resposta se for um novo desafio
+          if (!currentChallenge.value || currentChallenge.value.encrypted !== gameStateData.challenge.encrypted) {
+            currentChallenge.value = gameStateData.challenge
+            userAnswer.value = ''
+            // Reset hasAnswered for new challenge
+            hasAnswered.value = answeredChallenges.value.has(gameStateData.challenge.encrypted)
+          }
         }
         if (gameStateData.time_left) {
           timeLeft.value = gameStateData.time_left
         }
       }
-      
-      userAnswer.value = ''
       
       if (timerInterval.value) {
         clearInterval(timerInterval.value)

@@ -5,10 +5,12 @@
         v-if="!currentPlayer"
         @user-registered="handleUserRegistration"
       />
-      <GameRoom
-        v-else
-        :current-player="currentPlayer"
-      />
+      <div v-else>
+        <GameRoom
+          :current-player="currentPlayer"
+          @game-state-change="handleGameStateChange"
+        />
+      </div>
     </v-main>
   </v-app>
 </template>
@@ -16,8 +18,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useSupabaseClient } from '#imports'
+import CaesarWheel from '~/components/CaesarWheel.vue'
 
 const currentPlayer = ref(null)
+const gameState = ref('waiting')
 
 onMounted(() => {
   const savedUsername = localStorage.getItem('gameUsername')
@@ -42,5 +46,9 @@ const loadPlayer = async (username) => {
 
 const handleUserRegistration = (player) => {
   currentPlayer.value = player
+}
+
+const handleGameStateChange = (state) => {
+  gameState.value = state
 }
 </script> 
