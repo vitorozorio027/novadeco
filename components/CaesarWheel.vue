@@ -102,21 +102,74 @@ const handleMouseUp = () => {
   activeWheel = null
 }
 
+const handleTouchStart = (e, wheel) => {
+  e.preventDefault()
+  isDragging = true
+  activeWheel = wheel
+  const touch = e.touches[0]
+  const rect = wheel.getBoundingClientRect()
+  const centerX = rect.left + rect.width / 2
+  const centerY = rect.top + rect.height / 2
+  startAngle = Math.atan2(touch.clientY - centerY, touch.clientX - centerX) * (180 / Math.PI)
+  currentAngle = wheel === outerWheel.value ? outerRotation.value : innerRotation.value
+}
+
+const handleTouchMove = (e) => {
+  if (!isDragging || !activeWheel) return
+  e.preventDefault()
+  const touch = e.touches[0]
+  const rect = activeWheel.getBoundingClientRect()
+  const centerX = rect.left + rect.width / 2
+  const centerY = rect.top + rect.height / 2
+  const angle = Math.atan2(touch.clientY - centerY, touch.clientX - centerX) * (180 / Math.PI)
+  const deltaAngle = angle - startAngle
+  
+  if (activeWheel === outerWheel.value) {
+    outerRotation.value = currentAngle + deltaAngle
+    const newShift = Math.round((outerRotation.value * 26) / 360) % 26
+    outerShift.value = newShift < 0 ? newShift + 26 : newShift
+  } else {
+    innerRotation.value = currentAngle + deltaAngle
+    const newShift = Math.round((innerRotation.value * 26) / 360) % 26
+    innerShift.value = newShift < 0 ? newShift + 26 : newShift
+  }
+}
+
+const handleTouchEnd = (e) => {
+  e.preventDefault()
+  isDragging = false
+  activeWheel = null
+}
+
 onMounted(() => {
   if (outerWheel.value && innerWheel.value) {
+    // Mouse events
     outerWheel.value.addEventListener('mousedown', (e) => handleMouseDown(e, outerWheel.value))
     innerWheel.value.addEventListener('mousedown', (e) => handleMouseDown(e, innerWheel.value))
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
+    
+    // Touch events
+    outerWheel.value.addEventListener('touchstart', (e) => handleTouchStart(e, outerWheel.value))
+    innerWheel.value.addEventListener('touchstart', (e) => handleTouchStart(e, innerWheel.value))
+    window.addEventListener('touchmove', handleTouchMove)
+    window.addEventListener('touchend', handleTouchEnd)
   }
 })
 
 onUnmounted(() => {
   if (outerWheel.value && innerWheel.value) {
+    // Mouse events
     outerWheel.value.removeEventListener('mousedown', (e) => handleMouseDown(e, outerWheel.value))
     innerWheel.value.removeEventListener('mousedown', (e) => handleMouseDown(e, innerWheel.value))
     window.removeEventListener('mousemove', handleMouseMove)
     window.removeEventListener('mouseup', handleMouseUp)
+    
+    // Touch events
+    outerWheel.value.removeEventListener('touchstart', (e) => handleTouchStart(e, outerWheel.value))
+    innerWheel.value.removeEventListener('touchstart', (e) => handleTouchStart(e, innerWheel.value))
+    window.removeEventListener('touchmove', handleTouchMove)
+    window.removeEventListener('touchend', handleTouchEnd)
   }
 })
 </script>
