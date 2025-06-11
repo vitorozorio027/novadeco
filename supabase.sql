@@ -34,8 +34,7 @@ create table players (
     games_won integer default 0,
     highest_score integer default 0,
     current_streak integer default 0,
-    best_streak integer default 0,
-    answered_challenges text[] default array[]::text[]
+    best_streak integer default 0
 );
 
 

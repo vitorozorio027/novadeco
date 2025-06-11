@@ -3,37 +3,51 @@
     <v-row>
       <v-col cols="12" md="8">
         <v-card class="mb-4">
-          <v-card-title class="text-h5">
-            Sala de Jogo
-            <v-chip
-              color="primary"
-              class="ml-2"
-              v-if="gameState === 'waiting'"
-            >
-              Aguardando início...
-            </v-chip>
-            <v-chip
-              color="warning"
-              class="ml-2"
-              v-if="gameState === 'countdown'"
-            >
-              Preparando...
-            </v-chip>
-            <v-chip
-              color="success"
-              class="ml-2"
-              v-else-if="gameState === 'playing'"
-            >
-              Jogando!
-            </v-chip>
-            <v-chip
-              color="error"
-              class="ml-2"
-              v-else-if="gameState === 'ended'"
-            >
-              Jogo Finalizado
-            </v-chip>
-          </v-card-title>
+  <v-card-title class="d-flex justify-space-between align-center">
+    <!-- bloco da esquerda: título + chips -->
+    <div class="d-flex align-center text-h5">
+      Sala de Jogo
+
+      <v-chip
+        color="primary"
+        class="ml-2"
+        v-if="gameState === 'waiting'"
+      >
+        Aguardando início...
+      </v-chip>
+      <v-chip
+        color="warning"
+        class="ml-2"
+        v-if="gameState === 'countdown'"
+      >
+        Preparando...
+      </v-chip>
+      <v-chip
+        color="success"
+        class="ml-2"
+        v-else-if="gameState === 'playing'"
+      >
+        Jogando!
+      </v-chip>
+      <v-chip
+        color="error"
+        class="ml-2"
+        v-else-if="gameState === 'ended'"
+      >
+        Jogo Finalizado
+      </v-chip>
+    </div>
+
+    <!-- bloco da direita: ícone de ranking -->
+    <v-btn
+      v-if="gameState !== 'waiting'"
+      icon
+      color="primary"
+      @click="showRanking = true"
+    >
+      <v-icon>mdi-trophy</v-icon>
+    </v-btn>
+  </v-card-title>
 
           <v-card-text>
             <div v-if="gameState === 'waiting'" class="text-center">
@@ -103,7 +117,7 @@
       </v-col>
 
       <v-col cols="12" md="4">
-        <v-card>
+        <v-card v-if="gameState === 'waiting'">
           <v-card-title>Ranking</v-card-title>
           <v-card-text>
             <v-list>
@@ -122,9 +136,39 @@
             </v-list>
           </v-card-text>
         </v-card>
+
         <CaesarWheel v-if="gameState === 'playing'" class="mt-4" />
       </v-col>
     </v-row>
+
+    <!-- Ranking Modal -->
+    <v-dialog v-model="showRanking" max-width="500">
+      <v-card>
+        <v-card-title class="text-h5">
+          Ranking
+          <v-spacer></v-spacer>
+          <v-btn icon @click="showRanking = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <v-list>
+            <v-list-item
+              v-for="player in sortedPlayers"
+              :key="player.id"
+              :class="{ 'highlight-player': player.id === currentPlayer.id }"
+            >
+              <v-list-item-title>
+                {{ player.username }}
+              </v-list-item-title>
+              <v-list-item-subtitle>
+                Pontos: {{ player.score }}
+              </v-list-item-subtitle>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -147,8 +191,8 @@ const emit = defineEmits(['game-state-change'])
 const supabase = useSupabaseClient()
 
 const gameState = ref('waiting')
-const countdown = ref(3)
-const timeLeft = ref(30)
+const countdown = ref(0)
+const timeLeft = ref(DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit)
 const userAnswer = ref('')
 const hasAnswered = ref(false)
 const players = ref([])
@@ -161,6 +205,7 @@ const timerInterval = ref(null)
 const autoGameInterval = ref(null)
 const reconnectAttempts = ref(0)
 const maxReconnectAttempts = 3
+const showRanking = ref(false)
 
 const sortedPlayers = computed(() => {
   return [...players.value].sort((a, b) => b.score - a.score)
@@ -336,7 +381,7 @@ const handleGameStateUpdate = async (payload) => {
 
         if (timeLeft.value <= 0) {
           clearInterval(timerInterval.value)
-          endRound()
+          await startNewRound()
         }
       }, 1000)
     }
@@ -347,15 +392,20 @@ const handleGameStateUpdate = async (payload) => {
 
 const handlePlayerUpdate = async (payload) => {
   try {
-    // Busca a lista atualizada de jogadores do banco
-    const { data: updatedPlayers } = await supabase
-      .from('players')
-      .select('*')
-      .order('score', { ascending: false })
-    
-    if (updatedPlayers) {
-      players.value = updatedPlayers
-      invalidateCache('players')
+    if (payload.players) {
+      // Se receber a lista completa de jogadores, atualiza diretamente
+      players.value = payload.players
+    } else {
+      // Se receber apenas um jogador, busca a lista atualizada
+      const { data: updatedPlayers } = await supabase
+        .from('players')
+        .select('*')
+        .order('score', { ascending: false })
+      
+      if (updatedPlayers) {
+        players.value = updatedPlayers
+        invalidateCache('players')
+      }
     }
   } catch (error) {
     handleError(error, supabase)
@@ -445,20 +495,6 @@ const submitAnswer = async () => {
   hasAnswered.value = true
   answeredChallenges.value.add(currentChallenge.value.encrypted)
 
-  // Atualiza o estado de resposta no banco de dados
-  const { error: updateError } = await supabase
-    .from('players')
-    .update({ 
-      answered_challenges: [...answeredChallenges.value],
-      last_active: new Date().toISOString()
-    })
-    .eq('id', props.currentPlayer.id)
-
-  if (updateError) {
-    console.error('Erro ao atualizar estado de resposta:', updateError)
-    return
-  }
-
   if (isCorrect) {
     // Primeiro busca o score atual do jogador
     const { data: currentPlayerData } = await supabase
@@ -488,10 +524,14 @@ const submitAnswer = async () => {
       return
     }
 
-    // Atualiza o estado local do jogador
-    const playerIndex = players.value.findIndex(p => p.id === props.currentPlayer.id)
-    if (playerIndex !== -1) {
-      players.value[playerIndex].score = newScore
+    // Busca a lista atualizada de jogadores
+    const { data: updatedPlayers } = await supabase
+      .from('players')
+      .select('*')
+      .order('score', { ascending: false })
+
+    if (updatedPlayers) {
+      players.value = updatedPlayers
     }
 
     // Depois faz o broadcast para atualizar os outros jogadores
@@ -501,8 +541,7 @@ const submitAnswer = async () => {
         type: 'broadcast',
         event: 'player-update',
         payload: {
-          id: props.currentPlayer.id,
-          score: newScore
+          players: updatedPlayers
         }
       })
   }
@@ -528,24 +567,13 @@ const startGame = async () => {
 }
 
 const startAutoGame = () => {
-  if (autoGameInterval.value) {
-    clearInterval(autoGameInterval.value)
-  }
-
-  autoGameInterval.value = setInterval(async () => {
-    if (gameState.value === 'playing') {
-      await startNewRound()
-    }
-  }, GAME_SETTINGS.autoGame.roundInterval)
+  console.log('Auto game system initialized')
 }
 
 const endGame = async () => {
   if (!isHost.value) return
 
   // Para o sistema automático
-  if (autoGameInterval.value) {
-    clearInterval(autoGameInterval.value)
-  }
   if (timerInterval.value) {
     clearInterval(timerInterval.value)
   }
@@ -579,9 +607,6 @@ onUnmounted(() => {
   }
   if (timerInterval.value) {
     clearInterval(timerInterval.value)
-  }
-  if (autoGameInterval.value) {
-    clearInterval(autoGameInterval.value)
   }
   supabase.removeAllChannels()
 })
