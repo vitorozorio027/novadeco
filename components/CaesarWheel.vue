@@ -1,7 +1,7 @@
 <template>
   <div class="caesar-wheel-container">
     <div class="wheel-wrapper">
-      <div class="wheel outer-wheel" ref="outerWheel" :style="{ transform: `rotate(${outerRotation}deg)` }">
+      <div class="wheel outer-wheel" ref="outerWheel" :style="{ transform: `rotate(${outerRotation}deg)` }" @mousedown="(e) => handleMouseDown(e, outerWheel)" @touchstart="(e) => handleTouchStart(e, outerWheel)">
         <div class="wheel-border"></div>
         <div v-for="(letter, index) in alphabet" :key="index" class="wheel-letter" :class="{ 'highlight-letter': letter === 'A' }" :style="getLetterPosition(index, 26, 140)">
           <div class="letter-content">{{ letter }}</div>
@@ -11,7 +11,7 @@
              :style="getDividerPosition(index, 26, 140)">
         </div>
       </div>
-      <div class="wheel inner-wheel" ref="innerWheel" :style="{ transform: `rotate(${innerRotation}deg)` }">
+      <div class="wheel inner-wheel" ref="innerWheel" :style="{ transform: `rotate(${innerRotation}deg)` }" @mousedown="(e) => handleMouseDown(e, innerWheel)" @touchstart="(e) => handleTouchStart(e, innerWheel)">
         <div class="wheel-border"></div>
         <div v-for="(letter, index) in alphabet" :key="index" class="wheel-letter" :class="{ 'highlight-letter': letter === 'A' }" :style="getLetterPosition(index, 26, 100)">
           <div class="letter-content">{{ letter }}</div>
@@ -112,6 +112,9 @@ const handleTouchStart = (e, wheel) => {
   const centerY = rect.top + rect.height / 2
   startAngle = Math.atan2(touch.clientY - centerY, touch.clientX - centerX) * (180 / Math.PI)
   currentAngle = wheel === outerWheel.value ? outerRotation.value : innerRotation.value
+  
+  document.addEventListener('touchmove', handleTouchMove, { passive: false })
+  document.addEventListener('touchend', handleTouchEnd, { passive: false })
 }
 
 const handleTouchMove = (e) => {
@@ -139,39 +142,23 @@ const handleTouchEnd = (e) => {
   e.preventDefault()
   isDragging = false
   activeWheel = null
+  
+  document.removeEventListener('touchmove', handleTouchMove)
+  document.removeEventListener('touchend', handleTouchEnd)
 }
 
 onMounted(() => {
-  if (outerWheel.value && innerWheel.value) {
-    // Mouse events
-    outerWheel.value.addEventListener('mousedown', (e) => handleMouseDown(e, outerWheel.value))
-    innerWheel.value.addEventListener('mousedown', (e) => handleMouseDown(e, innerWheel.value))
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-    
-    // Touch events
-    outerWheel.value.addEventListener('touchstart', (e) => handleTouchStart(e, outerWheel.value))
-    innerWheel.value.addEventListener('touchstart', (e) => handleTouchStart(e, innerWheel.value))
-    window.addEventListener('touchmove', handleTouchMove)
-    window.addEventListener('touchend', handleTouchEnd)
-  }
+  window.addEventListener('mousemove', handleMouseMove)
+  window.addEventListener('mouseup', handleMouseUp)
 })
 
 onUnmounted(() => {
-  if (outerWheel.value && innerWheel.value) {
-    // Mouse events
-    outerWheel.value.removeEventListener('mousedown', (e) => handleMouseDown(e, outerWheel.value))
-    innerWheel.value.removeEventListener('mousedown', (e) => handleMouseDown(e, innerWheel.value))
-    window.removeEventListener('mousemove', handleMouseMove)
-    window.removeEventListener('mouseup', handleMouseUp)
-    
-    // Touch events
-    outerWheel.value.removeEventListener('touchstart', (e) => handleTouchStart(e, outerWheel.value))
-    innerWheel.value.removeEventListener('touchstart', (e) => handleTouchStart(e, innerWheel.value))
-    window.removeEventListener('touchmove', handleTouchMove)
-    window.removeEventListener('touchend', handleTouchEnd)
-  }
+  window.removeEventListener('mousemove', handleMouseMove)
+  window.removeEventListener('mouseup', handleMouseUp)
+  document.removeEventListener('touchmove', handleTouchMove)
+  document.removeEventListener('touchend', handleTouchEnd)
 })
+
 </script>
 
 <style scoped>
