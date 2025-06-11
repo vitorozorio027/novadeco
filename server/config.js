@@ -2,7 +2,7 @@ export const FIXED_HOST_ID = process.env.FIXED_HOST_ID || '00000000-0000-0000-00
 
 export const GAME_SETTINGS = {
   timeLimit: 30,
-  minPlayers: 2,
+  minPlayers: 0,
   maxPlayers: 50,
   difficulty: 'medium',
   reconnectTimeout: 30000, // 30 segundos
@@ -12,6 +12,12 @@ export const GAME_SETTINGS = {
   rateLimit: {
     windowMs: 15 * 60 * 1000, // 15 minutos
     max: 100 // limite de 100 requisições por janela
+  },
+  autoGame: {
+    enabled: true,
+    roundInterval: 30000, // 30 segundos entre rodadas
+    minRoundTime: 20000, // 20 segundos mínimo por rodada
+    maxRoundTime: 45000  // 45 segundos máximo por rodada
   }
 }
 

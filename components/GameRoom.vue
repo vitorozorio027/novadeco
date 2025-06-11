@@ -10,7 +10,7 @@
               class="ml-2"
               v-if="gameState === 'waiting'"
             >
-              Aguardando jogadores...
+              Aguardando início...
             </v-chip>
             <v-chip
               color="warning"
@@ -27,11 +27,11 @@
               Jogando!
             </v-chip>
             <v-chip
-              color="warning"
+              color="error"
               class="ml-2"
-              v-else-if="gameState === 'paused'"
+              v-else-if="gameState === 'ended'"
             >
-              Jogo Pausado pelo Host
+              Jogo Finalizado
             </v-chip>
           </v-card-title>
 
@@ -41,7 +41,7 @@
                 Você é o Host
               </div>
               <div v-else class="text-h5 mb-4 text-secondary">
-                Você é um jogador, espere o host iniciar o jogo
+                Aguarde o host iniciar o jogo
               </div>
               <v-btn
                 color="primary"
@@ -79,33 +79,23 @@
               </v-btn>
               <v-btn
                 v-if="isHost"
-                color="warning"
-                @click="pauseGame"
+                color="error"
+                @click="endGame"
+                class="ml-2"
               >
-                Pausar Jogo
+                Terminar Jogo
               </v-btn>
               <div class="text-h2 mt-4">{{ timeLeft }}s</div>
             </div>
 
-            <div v-else-if="gameState === 'paused'" class="text-center">
-              <div class="text-h4 mb-4">
-                Palavra Cifrada: {{ currentChallenge.encrypted }}
-              </div>
-              <div class="text-h6 mb-4">
-                Deslocamento: {{ currentChallenge.shift }}
-              </div>
-              <v-text-field
-                v-model="userAnswer"
-                label="Sua resposta"
-                disabled
-              ></v-text-field>
+            <div v-else-if="gameState === 'ended'" class="text-center">
+              <div class="text-h4 mb-4">Jogo Finalizado</div>
               <v-btn
                 v-if="isHost"
                 color="primary"
-                @click="resumeGame"
-                class="mt-2"
+                @click="startGame"
               >
-                Retomar Jogo
+                Iniciar Novo Jogo
               </v-btn>
             </div>
           </v-card-text>
@@ -113,7 +103,7 @@
       </v-col>
 
       <v-col cols="12" md="4">
-        <v-card v-if="gameState !== 'playing'">
+        <v-card>
           <v-card-title>Ranking</v-card-title>
           <v-card-text>
             <v-list>
@@ -132,7 +122,7 @@
             </v-list>
           </v-card-text>
         </v-card>
-        <CaesarWheel v-else />
+        <CaesarWheel v-if="gameState === 'playing'" class="mt-4" />
       </v-col>
     </v-row>
   </v-container>
@@ -168,6 +158,7 @@ const answeredChallenges = ref(new Set())
 const isHost = computed(() => props.currentPlayer.id === currentHostId.value)
 const gameInterval = ref(null)
 const timerInterval = ref(null)
+const autoGameInterval = ref(null)
 const reconnectAttempts = ref(0)
 const maxReconnectAttempts = 3
 
@@ -378,25 +369,23 @@ const endRound = async () => {
 
 const startNewRound = async () => {
   try {
-    // Apenas o host gera a palavra e o deslocamento
-    if (isHost.value) {
-      const shift = generateRandomShift()
-      const word = await generateRandomWord()
-      const challenge = {
-        encrypted: encrypt(word, shift),
-        shift: shift
-      }
-
-      // Atualiza o estado do jogo com o novo desafio
-      await supabase
-        .from('game_state')
-        .update({
-          challenge: challenge,
-          state: 'countdown',
-          time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
-        })
-        .eq('id', 1)
+    // Gera novo desafio automaticamente
+    const shift = generateRandomShift()
+    const word = await generateRandomWord()
+    const challenge = {
+      encrypted: encrypt(word, shift),
+      shift: shift
     }
+
+    // Atualiza o estado do jogo com o novo desafio
+    await supabase
+      .from('game_state')
+      .update({
+        challenge: challenge,
+        state: 'countdown',
+        time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+      })
+      .eq('id', 1)
 
     // Iniciar contador regressivo de 3 segundos
     countdown.value = 3
@@ -416,7 +405,7 @@ const startNewRound = async () => {
       countdown.value--
       if (countdown.value <= 0) {
         clearInterval(countdownInterval)
-        // Iniciar o jogo após o contador chegar a 0
+        // Iniciar a rodada após o contador chegar a 0
         supabase
           .channel('game-state')
           .send({
@@ -522,28 +511,7 @@ const submitAnswer = async () => {
 const startGame = async () => {
   if (!isHost.value) return
 
-  await startNewRound()
-}
-
-const pauseGame = async () => {
-  if (!isHost.value) return
-  
-  clearInterval(timerInterval.value)
-  await supabase
-    .channel('game-state')
-    .send({
-      type: 'broadcast',
-      event: 'game-state',
-      payload: {
-        state: 'paused',
-        challenge: currentChallenge.value
-      }
-    })
-}
-
-const resumeGame = async () => {
-  if (!isHost.value) return
-
+  // Inicia o sistema automático de jogo
   await supabase
     .channel('game-state')
     .send({
@@ -551,18 +519,58 @@ const resumeGame = async () => {
       event: 'game-state',
       payload: {
         state: 'playing',
-        challenge: currentChallenge.value
+        host_id: currentHostId.value
       }
     })
 
-  // Resume countdown timer
-  timerInterval.value = setInterval(() => {
-    timeLeft.value--
-    if (timeLeft.value <= 0) {
-      clearInterval(timerInterval.value)
-      startNewRound()
+  // Inicia o sistema automático de rodadas
+  startAutoGame()
+}
+
+const startAutoGame = () => {
+  if (autoGameInterval.value) {
+    clearInterval(autoGameInterval.value)
+  }
+
+  autoGameInterval.value = setInterval(async () => {
+    if (gameState.value === 'playing') {
+      await startNewRound()
     }
-  }, 1000)
+  }, GAME_SETTINGS.autoGame.roundInterval)
+}
+
+const endGame = async () => {
+  if (!isHost.value) return
+
+  // Para o sistema automático
+  if (autoGameInterval.value) {
+    clearInterval(autoGameInterval.value)
+  }
+  if (timerInterval.value) {
+    clearInterval(timerInterval.value)
+  }
+
+  // Atualiza o estado do jogo
+  await supabase
+    .channel('game-state')
+    .send({
+      type: 'broadcast',
+      event: 'game-state',
+      payload: {
+        state: 'ended',
+        host_id: currentHostId.value
+      }
+    })
+
+  // Reseta o estado do jogo no banco
+  await supabase
+    .from('game_state')
+    .update({
+      state: 'ended',
+      challenge: null,
+      time_left: null
+    })
+    .eq('id', 1)
 }
 
 onUnmounted(() => {
@@ -571,6 +579,9 @@ onUnmounted(() => {
   }
   if (timerInterval.value) {
     clearInterval(timerInterval.value)
+  }
+  if (autoGameInterval.value) {
+    clearInterval(autoGameInterval.value)
   }
   supabase.removeAllChannels()
 })
