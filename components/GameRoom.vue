@@ -137,7 +137,7 @@
           </v-card-text>
         </v-card>
 
-        <CaesarWheel v-if="gameState === 'playing'" class="mt-4" />
+        <CaesarWheel v-if="gameState === 'playing' || gameState === 'countdown'" class="mt-4" />
       </v-col>
     </v-row>
 
@@ -228,6 +228,24 @@ onMounted(async () => {
     if (initialGameState) {
       currentHostId.value = initialGameState.host_id
       gameState.value = initialGameState.state
+      
+      // Se o jogo já estiver em andamento, carregar o desafio atual
+      if (initialGameState.state === 'playing' && initialGameState.challenge) {
+        currentChallenge.value = initialGameState.challenge
+        timeLeft.value = initialGameState.time_left || DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+        
+        // Verificar se o jogador já respondeu ao desafio atual
+        const { data: playerData } = await supabase
+          .from('players')
+          .select('answered_challenges')
+          .eq('id', props.currentPlayer.id)
+          .single()
+
+        if (playerData && playerData.answered_challenges) {
+          answeredChallenges.value = new Set(playerData.answered_challenges)
+          hasAnswered.value = answeredChallenges.value.has(currentChallenge.value.encrypted)
+        }
+      }
     }
 
     // Subscribe to game state changes with reconnection handling
