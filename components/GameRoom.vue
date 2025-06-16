@@ -327,6 +327,14 @@ onMounted(async () => {
 
 const handleGameStateUpdate = async (payload) => {
   try {
+    // Se o estado mudou, limpa qualquer timer existente
+    if (gameState.value !== payload.state) {
+      if (timerInterval.value) {
+        clearInterval(timerInterval.value)
+        timerInterval.value = null
+      }
+    }
+
     gameState.value = payload.state
     emit('game-state-change', payload.state)
     
@@ -348,7 +356,7 @@ const handleGameStateUpdate = async (payload) => {
     }
 
     if (payload.state === 'countdown') {
-      countdown.value = payload.countdown
+      countdown.value = Math.max(0, payload.countdown)
     } else if (payload.state === 'playing') {
       // Busca o desafio atual do banco de dados
       const { data: gameStateData } = await supabase
@@ -367,17 +375,26 @@ const handleGameStateUpdate = async (payload) => {
           }
         }
         if (gameStateData.time_left) {
-          timeLeft.value = gameStateData.time_left
+          timeLeft.value = Math.max(0, gameStateData.time_left)
         }
       }
       
+      // Limpa qualquer timer existente antes de criar um novo
       if (timerInterval.value) {
         clearInterval(timerInterval.value)
+        timerInterval.value = null
       }
 
       // Sincroniza o timer com o servidor a cada segundo
       timerInterval.value = setInterval(async () => {
-        timeLeft.value--
+        if (timeLeft.value <= 0) {
+          clearInterval(timerInterval.value)
+          timerInterval.value = null
+          await startNewRound()
+          return
+        }
+
+        timeLeft.value = Math.max(0, timeLeft.value - 1)
         
         // Atualiza o tempo no banco de dados
         await supabase
@@ -396,11 +413,6 @@ const handleGameStateUpdate = async (payload) => {
               time_left: timeLeft.value
             }
           })
-
-        if (timeLeft.value <= 0) {
-          clearInterval(timerInterval.value)
-          await startNewRound()
-        }
       }, 1000)
     }
   } catch (error) {
@@ -437,6 +449,12 @@ const endRound = async () => {
 
 const startNewRound = async () => {
   try {
+    // Limpa qualquer timer existente
+    if (timerInterval.value) {
+      clearInterval(timerInterval.value)
+      timerInterval.value = null
+    }
+
     // Gera novo desafio automaticamente
     const shift = generateRandomShift()
     const word = await generateRandomWord()
@@ -457,6 +475,8 @@ const startNewRound = async () => {
 
     // Iniciar contador regressivo de 3 segundos
     countdown.value = 3
+    
+    // Atualiza o estado inicial do countdown
     await supabase
       .channel('game-state')
       .send({
@@ -468,13 +488,51 @@ const startNewRound = async () => {
         }
       })
 
-    // Atualizar o contador a cada segundo
-    const countdownInterval = setInterval(() => {
-      countdown.value--
+    // Função para atualizar o countdown
+    const updateCountdown = async () => {
       if (countdown.value <= 0) {
         clearInterval(countdownInterval)
-        // Iniciar a rodada após o contador chegar a 0
-        supabase
+        return
+      }
+
+      countdown.value = Math.max(0, countdown.value - 1)
+      
+      // Atualiza o estado do jogo no banco
+      await supabase
+        .from('game_state')
+        .update({
+          state: 'countdown',
+          time_left: countdown.value
+        })
+        .eq('id', 1)
+
+      // Broadcast para todos os clientes
+      await supabase
+        .channel('game-state')
+        .send({
+          type: 'broadcast',
+          event: 'game-state',
+          payload: {
+            state: 'countdown',
+            countdown: countdown.value
+          }
+        })
+
+      if (countdown.value === 0) {
+        // Limpa o intervalo
+        clearInterval(countdownInterval)
+        
+        // Atualiza o estado para playing
+        await supabase
+          .from('game_state')
+          .update({
+            state: 'playing',
+            time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
+          })
+          .eq('id', 1)
+
+        // Notifica todos os clientes
+        await supabase
           .channel('game-state')
           .send({
             type: 'broadcast',
@@ -484,20 +542,11 @@ const startNewRound = async () => {
               time_left: DIFFICULTY_SETTINGS[GAME_SETTINGS.difficulty].timeLimit
             }
           })
-      } else {
-        // Atualizar o contador para todos os jogadores
-        supabase
-          .channel('game-state')
-          .send({
-            type: 'broadcast',
-            event: 'game-state',
-            payload: {
-              state: 'countdown',
-              countdown: countdown.value
-            }
-          })
       }
-    }, 1000)
+    }
+
+    // Inicia o intervalo de countdown
+    const countdownInterval = setInterval(updateCountdown, 1000)
   } catch (error) {
     console.error('Error starting new round:', error)
     handleError(error, supabase)
