@@ -652,11 +652,7 @@ const handleGameStateUpdate = async (payload) => {
         }
 
         timeLeft.value = Math.max(0, timeLeft.value - 1)
-        
-        // Mostra aviso quando faltar 10 segundos
-        if (timeLeft.value === 10) {
-          showGameEndWarning.value = true
-        }
+      
         
         // Atualiza o tempo no banco de dados
         await supabase
